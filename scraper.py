@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Scraper intelligent de l'actualité burkinabè — VERSION SCRAPY v5
-Correction finale : AIB (sans Accept-Encoding) + tous les sites fonctionnent
+Scraper intelligent de l'actualité burkinabè — VERSION SCRAPY v8
+- URLs AIB corrigées
+- Détection vidéo AIB + RTB
+- Pipeline transcription : YouTube API v1 → yt-dlp → audio direct
+- Ollama via requests direct (évite bug openai/proxies)
+- Nettoyage HTML avec BeautifulSoup
 """
 
 import os
@@ -72,7 +76,6 @@ SOURCES = [
     },
 ]
 
-# Headers SANS Accept-Encoding (évite la compression binaire sur AIB)
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -90,19 +93,39 @@ REQUEST_TIMEOUT = 30
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _nettoyer_html(html_brut: str) -> str:
+    """Nettoie le HTML avec BeautifulSoup ou fallback regex."""
     if not html_brut:
         return ""
-    texte = re.sub(r"<[^>]+>", " ", html_brut)
+    
+    # Étape 1 : Extraire le texte avec BeautifulSoup
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_brut, "html.parser")
+        texte = soup.get_text(separator=" ", strip=True)
+    except ImportError:
+        # Fallback regex si bs4 non installé
+        texte = re.sub(r'<(script|style)[^>]*>.*?</\1>', ' ', html_brut, flags=re.DOTALL | re.IGNORECASE)
+        texte = re.sub(r'<[^>]+>', ' ', texte)
+    
+    # Étape 2 : Décoder les entités HTML numériques
+    texte = re.sub(r'&#(\d+);', lambda m: chr(int(m.group(1))), texte)
+    
+    # Étape 3 : Entités HTML nommées
     entites = {
         "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"',
-        "&#39;": "'", "&nbsp;": " ", "&agrave;": "à", "&eacute;": "é",
+        "&#39;": "'", "&nbsp;": " ", "&#160;": " ",
+        "&agrave;": "à", "&eacute;": "é",
         "&egrave;": "è", "&ecirc;": "ê", "&ocirc;": "ô", "&ucirc;": "û",
         "&rsquo;": "'", "&lsquo;": "'", "&rdquo;": '"', "&ldquo;": '"',
         "&#8230;": "…", "&hellip;": "…",
+        "&mdash;": "—", "&ndash;": "–",
+        "&laquo;": "«", "&raquo;": "»",
     }
     for entite, char in entites.items():
         texte = texte.replace(entite, char)
-    texte = re.sub(r"\s+", " ", texte).strip()
+    
+    # Étape 4 : Nettoyage final
+    texte = re.sub(r'\s+', ' ', texte).strip()
     return texte
 
 
@@ -114,7 +137,6 @@ def _normaliser_url_youtube(url: str) -> str:
 
 
 def _extraire_content_rss(entree) -> str:
-    """Extraction robuste du contenu RSS."""
     if hasattr(entree, "content_encoded") and entree.content_encoded:
         return entree.content_encoded
     if hasattr(entree, "content") and entree.content:
@@ -135,7 +157,6 @@ def _extraire_content_rss(entree) -> str:
 
 
 def _parse_rss_via_requests(urls: list[str]) -> tuple:
-    """Télécharge le flux RSS avec requests SANS compression, puis parse."""
     for url in urls:
         try:
             r = req_lib.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
@@ -168,9 +189,9 @@ class MongoDBPipeline:
             self.collection.create_index("url", unique=True)
             self.collection.create_index("source")
             self.collection.create_index("date_publication")
-            logger.info("✅ Connexion MongoDB — base : %s", MONGO_DB)
+            logger.info(" Connexion MongoDB — base : %s", MONGO_DB)
         except Exception as e:
-            logger.critical("❌ MongoDB indisponible : %s", e)
+            logger.critical(" MongoDB indisponible : %s", e)
             raise
 
     def close_spider(self, spider):
@@ -186,13 +207,13 @@ class MongoDBPipeline:
                 upsert=True,
             )
             if resultat.upserted_id:
-                logger.info("💾 [%s] Nouvel article : %s", item["source"], item.get("titre", "?")[:70])
+                logger.info(" [%s] Nouvel article : %s", item["source"], item.get("titre", "?")[:70])
             else:
-                logger.debug("⏭️  [%s] Déjà existant : %s", item["source"], item.get("url", "?")[:60])
+                logger.debug("  [%s] Déjà existant : %s", item["source"], item.get("url", "?")[:60])
         except mongo_errors.DuplicateKeyError:
             pass
         except Exception as e:
-            logger.error("❌ Erreur MongoDB : %s", e)
+            logger.error(" Erreur MongoDB : %s", e)
         return item
 
 
@@ -212,7 +233,6 @@ class BurkinaNewsSpider(scrapy.Spider):
         "DEFAULT_REQUEST_HEADERS": {
             "Accept-Language": "fr-FR,fr;q=0.9",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            # PAS de Accept-Encoding ici (évite compression binaire)
         },
         "CONCURRENT_REQUESTS": 4,
         "CONCURRENT_REQUESTS_PER_DOMAIN": 2,
@@ -227,7 +247,7 @@ class BurkinaNewsSpider(scrapy.Spider):
             flux, url_ok = _parse_rss_via_requests(source["urls"])
 
             if flux and flux.entries:
-                logger.info("📡 %s — %d articles via RSS (%s)", source["nom"], len(flux.entries), url_ok)
+                logger.info(" %s — %d articles via RSS (%s)", source["nom"], len(flux.entries), url_ok)
                 if source["type"] == "rss_video":
                     yield from self._yield_video(source, flux)
                 else:
@@ -243,7 +263,7 @@ class BurkinaNewsSpider(scrapy.Spider):
                         dont_filter=True,
                     )
                 else:
-                    logger.error("❌ %s : aucun flux accessible et pas de fallback", source["nom"])
+                    logger.error(" %s : aucun flux accessible et pas de fallback", source["nom"])
 
     def _yield_texte(self, source, flux):
         rss_direct = 0
@@ -285,7 +305,7 @@ class BurkinaNewsSpider(scrapy.Spider):
                     errback=self._handle_error,
                     dont_filter=True,
                 )
-        logger.info("📰 %s : %d articles insérés directement depuis RSS", source["nom"], rss_direct)
+        logger.info(" %s : %d articles insérés directement depuis RSS", source["nom"], rss_direct)
 
     def _yield_video(self, source, flux):
         for entree in flux.entries:
@@ -319,16 +339,14 @@ class BurkinaNewsSpider(scrapy.Spider):
             )
 
     def _handle_error(self, failure):
-        logger.error("❌ Échec requête %s : %s", failure.request.url, failure.value)
+        logger.error(" Échec requête %s : %s", failure.request.url, failure.value)
 
-    # ── Fallback AIB : scraping de la page d'accueil ────────────────────
+    # ── Fallback AIB ────────────────────────────────────────────────────
 
     def parse_homepage_aib(self, response):
-        """Extrait les articles de la page d'accueil AIB quand le RSS est bloqué."""
         source = response.meta["source"]
         articles_trouves = 0
 
-        # Sélecteurs spécifiques AIB (thème Newspaper / tagDiv)
         selecteurs_aib = [
             "h3.entry-title.td-module-title a",
             ".td-module-title a",
@@ -372,9 +390,8 @@ class BurkinaNewsSpider(scrapy.Spider):
                 )
                 articles_trouves += 1
 
-        # Fallback : liens contenant ?p= (format WordPress AIB)
         if articles_trouves == 0:
-            logger.warning("⚠️  AIB : sélecteurs td-module-title vides, tentative liens ?p=...")
+            logger.warning("  AIB : sélecteurs vides, tentative liens ?p=...")
             for href in response.css("a[href*='?p=']::attr(href)").getall():
                 href = urljoin(response.url, href).strip()
                 if href in self.seen_urls:
@@ -400,14 +417,21 @@ class BurkinaNewsSpider(scrapy.Spider):
                 if articles_trouves >= 20:
                     break
 
-        logger.info("📰 AIB (fallback HTML) : %d articles à scraper", articles_trouves)
+        logger.info(" AIB (fallback HTML) : %d articles à scraper", articles_trouves)
 
-    # ── Parsing textes ───────────────────────────────────────────────────
+    # ── Parsing textes ──────────────────────────────────────────────────
 
     def parse_texte(self, response):
         meta = response.meta
         source = meta["source"]
         domaine = source["domaine"]
+
+        if domaine == "aib.media":
+            url_video = self._detecter_video_aib(response)
+            if url_video:
+                logger.info(" AIB vidéo détectée : %s", url_video)
+                yield from self._traiter_video(source, meta, url_video)
+                return
 
         corps = self._extraire_texte_scrapy(response, domaine)
         if not corps or len(corps) < 200:
@@ -415,7 +439,7 @@ class BurkinaNewsSpider(scrapy.Spider):
         if not corps or len(corps) < 200:
             corps = meta.get("resume_rss", "")
             if not corps:
-                logger.warning("⚠️  [%s] Corps vide : %s", source["nom"], meta["url"])
+                logger.warning("  [%s] Corps vide : %s", source["nom"], meta["url"])
 
         item = self._build_item(source, meta, corps)
         yield item
@@ -423,24 +447,15 @@ class BurkinaNewsSpider(scrapy.Spider):
     def _extraire_texte_scrapy(self, response, domaine: str) -> str:
         selecteurs = {
             "aib.media": [
-                "article .entry-content",
-                ".td-post-content",
-                ".tdb-block-inner",
-                ".td_block_wrap .tdb-block-inner",
-                ".post-content",
-                "article",
-                ".td-main-content",
+                "article .entry-content", ".td-post-content", ".tdb-block-inner",
+                ".td_block_wrap .tdb-block-inner", ".post-content", "article", ".td-main-content",
             ],
-            "sidwaya.info": [
-                ".entry-content", ".td-post-content", ".post-content", "article",
-            ],
+            "sidwaya.info": [".entry-content", ".td-post-content", ".post-content", "article"],
             "lefaso.net": [
                 ".texte", "#article .texte", ".contenu-principal .texte",
                 "#contenu .texte", ".spip_texte", "#spip_article .spip_texte", "article",
             ],
-            "burkina24.com": [
-                ".entry-content", ".td-post-content", ".post-content", "article",
-            ],
+            "burkina24.com": [".entry-content", ".td-post-content", ".post-content", "article"],
         }.get(domaine, [])
 
         selecteurs += [
@@ -457,6 +472,10 @@ class BurkinaNewsSpider(scrapy.Spider):
                 textes = noeud.css("::text").getall()
             texte = " ".join(t.strip() for t in textes if t.strip())
             texte = re.sub(r"\s+", " ", texte).strip()
+            
+            # ═══ AJOUT : Nettoyer les résidus HTML ═══
+            texte = _nettoyer_html(texte)
+            
             if len(texte) > 200:
                 return texte
         return ""
@@ -466,21 +485,262 @@ class BurkinaNewsSpider(scrapy.Spider):
             textes = response.css(f"{cible} p ::text").getall()
             texte = " ".join(t.strip() for t in textes if t.strip())
             if len(texte) > 100:
-                return texte
+                return _nettoyer_html(texte)
+            
             textes = response.css(f'{cible} div[dir="auto"] ::text').getall()
             texte = " ".join(t.strip() for t in textes if t.strip())
             if len(texte) > 100:
-                return texte
+                return _nettoyer_html(texte)
         return ""
 
-    # ── Parsing RTB ──────────────────────────────────────────────────────
+    # ── Détection vidéo AIB ─────────────────────────────────────────────
+
+    def _detecter_video_aib(self, response) -> str | None:
+        for src in response.css("iframe::attr(src)").getall():
+            if "youtube.com" in src or "youtu.be" in src:
+                return _normaliser_url_youtube(src)
+
+        for src in response.css("video::attr(src), video source::attr(src)").getall():
+            if src:
+                return urljoin(response.url, src)
+        for src in response.css("audio::attr(src), audio source::attr(src)").getall():
+            if src:
+                return urljoin(response.url, src)
+
+        pattern_media = r'(https?://[^"\']+\.(?:mp4|m4a|mp3|wav|ogg|webm))'
+        match = re.search(pattern_media, response.text)
+        if match:
+            return match.group(1)
+
+        pattern_yt = r"(https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[\w\-]{11})"
+        match = re.search(pattern_yt, response.text)
+        if match:
+            return match.group(1)
+
+        match = re.search(pattern_yt, response.meta.get("resume_rss", ""))
+        if match:
+            return match.group(1)
+
+        return None
+
+    # ── Traitement vidéo intelligent ────────────────────────────────────
+
+    def _traiter_video(self, source, meta, url_media):
+        transcription = ""
+        methode = ""
+
+        try:
+            if "youtube.com" in url_media or "youtu.be" in url_media:
+                logger.info(" YouTube détecté : %s", url_media)
+
+                # Pour RTB : téléchargement direct + Qwen 3.5
+                if source["nom"] == "RTB":
+                    logger.info(" RTB détecté — téléchargement audio + Qwen 3.5")
+                    transcription = self._transcrire_rtb_via_qwen(url_media)
+                    methode = "rtb_qwen35" if transcription else "failed"
+                else:
+                    # Pour AIB et autres : marquer comme non traité pour l'instant
+                    logger.info("  Source %s — vidéo ignorée (focus RTB)", source["nom"])
+                    transcription = meta.get("resume_rss", "")
+                    methode = "ignored_non_rtb"
+
+            else:
+                logger.info("  Fichier direct : %s", url_media)
+                transcription = self._transcrire_via_audio_direct(url_media)
+                methode = "direct_whisper" if transcription else "failed"
+
+        except Exception as e:
+            logger.error(" Erreur traitement vidéo %s : %s", meta["url"], e)
+            methode = "error"
+
+        corps_final = transcription or meta.get("resume_rss", "") or f"[Vidéo non transcrite - URL: {url_media}]"
+
+        item = self._build_item(source, meta, corps_final)
+        item["url_media"] = url_media
+        item["type_contenu"] = "video"
+        item["methode_transcription"] = methode
+        item["statut_video"] = "transcrite" if transcription else "non_disponible"
+
+        logger.info(" [%s] Vidéo '%s' → %d caractères", source["nom"], methode, len(transcription or ""))
+        yield item
+
+    def _transcrire_rtb_via_qwen(self, url_video: str) -> str:
+        chemin_audio = None
+        transcription = ""
+    
+        try:
+            logger.info("  Téléchargement audio RTB...")
+            chemin_audio = self._telecharger_audio_youtube(url_video)
+            if not chemin_audio:
+                logger.error(" Échec téléchargement audio RTB")
+                return ""
+        
+            logger.info(" Audio téléchargé : %s", chemin_audio)
+
+            base_url = os.getenv("QWEN_BASE_URL", "http://localhost:11434/v1")
+            model = os.getenv("QWEN_MODEL", "qwen3.5:8b")
+            ollama_ok = False
+
+            try:
+                r = req_lib.get(f"{base_url}/models", timeout=5)
+                r.raise_for_status()
+                ollama_ok = True
+                logger.info(" Ollama/Qwen 3.5 disponible")
+            except Exception as e:
+                logger.warning("  Ollama non disponible : %s — tentative Whisper local...", e)
+
+            if ollama_ok:
+                try:
+                    with open(chemin_audio, "rb") as f:
+                        files = {"file": f}
+                        data = {
+                            "model": model,
+                            "language": "fr",
+                            "response_format": "text",
+                            "prompt": "Transcris ce journal télévisé en français."
+                        }
+                        r = req_lib.post(
+                            f"{base_url}/audio/transcriptions",
+                            files=files, data=data, timeout=300,
+                        )
+                        r.raise_for_status()
+                        result = r.json()
+                        texte = result.get("text", "") if isinstance(result, dict) else str(result)
+                        if texte and len(texte) > 50:
+                            logger.info(" Transcription Qwen 3.5 OK (%d caractères)", len(texte))
+                            transcription = texte.strip()
+                except Exception as e:
+                    logger.error(" Erreur Ollama transcription : %s", e)
+
+            if not transcription:
+                logger.info(" Fallback faster-whisper local...")
+                try:
+                    from faster_whisper import WhisperModel
+                    modele = WhisperModel("base", device="cpu", compute_type="int8")
+                    segments, _ = modele.transcribe(chemin_audio, language="fr", beam_size=5)
+                    texte = " ".join(seg.text.strip() for seg in segments)
+                    if texte:
+                        logger.info("✅ Whisper OK (%d caractères)", len(texte))
+                        transcription = texte.strip()
+                except Exception as e:
+                    logger.error("❌ Échec faster-whisper : %s", e)
+
+            return transcription
+
+        except Exception as e:
+            logger.error("❌ Erreur pipeline RTB/Qwen : %s", e)
+            return ""
+
+        finally:
+            self._cleanup_temp(chemin_audio, garder_si_echec=(not transcription))
+    # ── Méthodes de transcription ───────────────────────────────────────
+
+    def _extraire_youtube_id(self, url: str) -> str | None:
+        patterns = [
+            r"(?:v=|\/)([\w-]{11}).*",
+            r"(?:embed\/)([\w-]{11})",
+            r"(?:youtu\.be\/)([\w-]{11})",
+        ]
+        for p in patterns:
+            match = re.search(p, url)
+            if match:
+                return match.group(1)
+        return None
+
+    def _transcrire_via_youtube_api(self, url_video: str) -> str:
+        """Compatible youtube-transcript-api v1.x."""
+        try:
+            video_id = self._extraire_youtube_id(url_video)
+            if not video_id:
+                return ""
+
+            logger.info("🔍 Sous-titres YouTube pour %s...", video_id)
+
+            from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+
+            ytt_api = YouTubeTranscriptApi()
+
+            try:
+                transcript = ytt_api.fetch(video_id, languages=['fr'])
+                logger.info(" Sous-titres FR trouvés")
+            except NoTranscriptFound:
+                transcript = ytt_api.fetch(video_id, languages=['en'])
+                logger.info(" Sous-titres EN trouvés (fallback)")
+
+            texte = " ".join([snippet.text for snippet in transcript])
+            texte = re.sub(r"\s+", " ", texte).strip()
+
+            if len(texte) > 50:
+                logger.info(" YouTube API OK (%d caractères)", len(texte))
+                return texte
+            return ""
+
+        except TranscriptsDisabled:
+            logger.warning("  Sous-titres désactivés sur cette vidéo")
+            return ""
+        except NoTranscriptFound:
+            logger.warning("  Aucun sous-titre trouvé (FR ou EN)")
+            return ""
+        except Exception as e:
+            if "429" in str(e) or "Too Many Requests" in str(e) or "IP" in str(e):
+                logger.warning("  YouTube rate limit / IP bloquée")
+            else:
+                logger.warning("⚠️  YouTube API échec : %s", e)
+            return ""
+
+    def _transcrire_via_ytdlp(self, url_video: str) -> str:
+        chemin_audio = None
+        transcription = ""
+        try:
+            chemin_audio = self._telecharger_audio_youtube(url_video)
+            if not chemin_audio:
+                return ""
+            transcription = self._transcrire_audio(chemin_audio)
+            return transcription
+        finally:
+            if not transcription:  # Si échec, garder le fichier
+                self._cleanup_temp(chemin_audio, garder_si_echec=True)
+            else:  # Si succès, supprimer
+                self._cleanup_temp(chemin_audio, garder_si_echec=False)
+
+    def _transcrire_via_audio_direct(self, url_media: str) -> str:
+        chemin_audio = None
+        try:
+            chemin_audio = self._telecharger_audio_direct(url_media)
+            if not chemin_audio:
+                return ""
+            return self._transcrire_audio(chemin_audio)
+        finally:
+            self._cleanup_temp(chemin_audio)
+
+    def _cleanup_temp(self, chemin_audio, garder_si_echec=False):
+        if not chemin_audio or not os.path.exists(chemin_audio):
+            return
+    
+        if garder_si_echec:
+            # Sauvegarde dans un dossier permanent
+            dossier_save = os.path.expanduser("~/Desktop/audios_rtb")
+            os.makedirs(dossier_save, exist_ok=True)
+            nom = os.path.basename(chemin_audio)
+            nouveau = os.path.join(dossier_save, f"{int(time.time())}_{nom}")
+            os.rename(chemin_audio, nouveau)
+            logger.info(" Audio sauvegardé : %s", nouveau)
+        else:
+            # Suppression normale
+            try:
+                os.remove(chemin_audio)
+                dossier = os.path.dirname(chemin_audio)
+                if os.path.isdir(dossier) and not os.listdir(dossier):
+                    os.rmdir(dossier)
+            except Exception:
+             pass
+
+    # ── Parsing RTB ─────────────────────────────────────────────────────
 
     def parse_rtb(self, response):
         meta = response.meta
         source = meta["source"]
         url_media = None
-        transcription = ""
-        chemin_audio = None
 
         try:
             for src in response.css("iframe::attr(src)").getall():
@@ -512,43 +772,29 @@ class BurkinaNewsSpider(scrapy.Spider):
                             url_media = m["url"]
                             break
 
-            if url_media:
-                if "youtube.com" in url_media or "youtu.be" in url_media:
-                    chemin_audio = self._telecharger_audio_youtube(url_media)
-                else:
-                    chemin_audio = self._telecharger_audio_direct(url_media)
-                if chemin_audio:
-                    transcription = self._transcrire_audio(chemin_audio)
-            else:
-                transcription = meta.get("resume_rss", "")
-
         except Exception as e:
-            logger.error("❌ Erreur RTB %s : %s", meta["url"], e)
-            transcription = meta.get("resume_rss", "")
-        finally:
-            if chemin_audio and os.path.exists(chemin_audio):
-                try:
-                    os.remove(chemin_audio)
-                    dossier = os.path.dirname(chemin_audio)
-                    if os.path.isdir(dossier) and not os.listdir(dossier):
-                        os.rmdir(dossier)
-                except Exception:
-                    pass
+            logger.error(" Erreur détection média RTB %s : %s", meta["url"], e)
 
-        item = self._build_item(source, meta, transcription or meta.get("resume_rss", ""))
-        item["url_media"] = url_media
-        yield item
+        if url_media:
+            yield from self._traiter_video(source, meta, url_media)
+        else:
+            item = self._build_item(source, meta, meta.get("resume_rss", ""))
+            item["url_media"] = None
+            item["type_contenu"] = "video"
+            item["methode_transcription"] = "no_media_found"
+            item["statut_video"] = "non_disponible"
+            yield item
 
-    # ── Audio / transcription ────────────────────────────────────────────
+    # ── Téléchargement audio ────────────────────────────────────────────
 
     def _telecharger_audio_youtube(self, url_video: str) -> str | None:
         try:
             import yt_dlp
-            dossier_temp = tempfile.mkdtemp(prefix="rtb_audio_")
+            dossier_temp = tempfile.mkdtemp(prefix="burk_audio_")
             options = {
                 "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
                 "outtmpl": os.path.join(dossier_temp, "%(id)s.%(ext)s"),
-                "postprocessors": [],  # SANS FFmpeg
+                "postprocessors": [],
                 "quiet": True,
                 "no_warnings": True,
             }
@@ -563,13 +809,13 @@ class BurkinaNewsSpider(scrapy.Spider):
                     if f.startswith(vid):
                         return os.path.join(dossier_temp, f)
         except Exception as e:
-            logger.error("❌ Échec yt-dlp (%s) : %s", url_video, e)
+            logger.error(" Échec yt-dlp (%s) : %s", url_video, e)
         return None
 
     def _telecharger_audio_direct(self, url_audio: str) -> str | None:
         try:
             ext = os.path.splitext(urlparse(url_audio).path)[-1] or ".mp3"
-            ftmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext, prefix="rtb_audio_")
+            ftmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext, prefix="burk_audio_")
             with req_lib.get(url_audio, headers=HEADERS, stream=True, timeout=60) as r:
                 r.raise_for_status()
                 for chunk in r.iter_content(chunk_size=8192):
@@ -577,35 +823,47 @@ class BurkinaNewsSpider(scrapy.Spider):
             ftmp.close()
             return ftmp.name
         except Exception as e:
-            logger.error("❌ Échec téléchargement direct (%s) : %s", url_audio, e)
+            logger.error(" Échec téléchargement direct (%s) : %s", url_audio, e)
         return None
 
     def _transcrire_audio(self, chemin_audio: str) -> str:
+        # Essai 1 : Ollama via requests direct
         try:
-            from openai import OpenAI
             base_url = os.getenv("QWEN_BASE_URL", "http://localhost:11434/v1")
             model = os.getenv("QWEN_MODEL", "qwen2.5:7b")
-            client = OpenAI(api_key="ollama", base_url=base_url)
-            with open(chemin_audio, "rb") as f:
-                tr = client.audio.transcriptions.create(
-                    model=model, file=f, language="fr", response_format="text"
-                )
-            texte = tr if isinstance(tr, str) else tr.text
-            logger.info("✅ Transcription Qwen OK (%d caractères)", len(texte))
-            return texte.strip()
-        except Exception as e:
-            logger.warning("⚠️  Qwen indisponible : %s", e)
 
+            with open(chemin_audio, "rb") as f:
+                files = {"file": f}
+                data = {"model": model, "language": "fr", "response_format": "text"}
+                r = req_lib.post(
+                    f"{base_url}/audio/transcriptions",
+                    files=files,
+                    data=data,
+                    timeout=300,
+                )
+                r.raise_for_status()
+                result = r.json()
+                texte = result.get("text", "") if isinstance(result, dict) else str(result)
+                if texte:
+                    logger.info(" Transcription Ollama OK (%d caractères)", len(texte))
+                    return texte.strip()
+        except Exception as e:
+            logger.warning("  Ollama indisponible : %s", e)
+
+        # Essai 2 : whisper-ctranslate2
         try:
-            from whisper_ctranslate2 import WhisperModel
+            from faster_whisper import WhisperModel 
             logger.info("🔁 Fallback whisper-ctranslate2…")
             modele = WhisperModel("base", device="cpu", compute_type="int8")
             segments, info = modele.transcribe(chemin_audio, language="fr", beam_size=5)
             texte = " ".join(seg.text.strip() for seg in segments)
-            logger.info("✅ Transcription Whisper OK (%d caractères)", len(texte))
+            logger.info(" Transcription Whisper OK (%d caractères)", len(texte))
             return texte.strip()
+        except ImportError:
+            logger.warning("  whisper_ctranslate2 non installé (pip install whisper-ctranslate2)")
         except Exception as e:
-            logger.error("❌ Échec transcription : %s", e)
+            logger.error(" Échec whisper-ctranslate2 : %s", e)
+
         return ""
 
     # ── Item builder ─────────────────────────────────────────────────────
@@ -635,22 +893,22 @@ class BurkinaNewsSpider(scrapy.Spider):
 
 def run_single_cycle():
     debut = datetime.now()
-    logger.info("🚀 Début cycle — %s", debut.strftime("%Y-%m-%d %H:%M:%S"))
+    logger.info(" Début cycle — %s", debut.strftime("%Y-%m-%d %H:%M:%S"))
     process = CrawlerProcess()
     process.crawl(BurkinaNewsSpider)
     process.start()
     duree = (datetime.now() - debut).total_seconds()
-    logger.info("🏁 Cycle terminé en %.1f secondes", duree)
+    logger.info(" Cycle terminé en %.1f secondes", duree)
 
 
 def main_scheduler():
     multiprocessing.set_start_method("spawn", force=True)
-    logger.info("⏱️  Premier cycle immédiat…")
+    logger.info("⏱  Premier cycle immédiat…")
     p = multiprocessing.Process(target=run_single_cycle)
     p.start()
     p.join()
     while True:
-        logger.info("😴 Attente 1 heure…")
+        logger.info(" Attente 1 heure…")
         time.sleep(3600)
         p = multiprocessing.Process(target=run_single_cycle)
         p.start()
