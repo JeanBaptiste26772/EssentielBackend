@@ -55,6 +55,41 @@ class ArticleDetail(BaseModel):
     statut_resume: str      # "en_attente" | "traite"
     statut_paraphrase: str  # "en_attente" | "traite"
     langue: str = "fr"
+    class Config:
+        populate_by_name = True
+
+class ArticleTraiteResume(BaseModel):
+    """Version allégée pour la liste — basée sur articles_traites"""
+    id: str = Field(..., alias="_id")
+    titre: str
+    categorie: str
+    resume_fr: str
+    date_publication: Optional[datetime] = None
+    date_traitement: datetime
+    statut_tts: str = "en_attente"
+    a_audio: bool = False
+    a_moore: bool = False
+    sources: list = []
+    images: Optional[list] = None   # URLs des images illustratives
+
+    class Config:
+        populate_by_name = True
+
+
+class ArticleTraiteDetail(BaseModel):
+    """Version complète quand l'utilisateur clique"""
+    id: str = Field(..., alias="_id")
+    titre: str
+    categorie: str
+    resume_fr: str
+    resume_moore: Optional[str] = None
+    audio_moore_url: Optional[str] = None
+    sources: list = []
+    images: Optional[list] = None   # URLs des images illustratives
+    date_publication: Optional[datetime] = None
+    date_traitement: datetime
+    statut_tts: str = "en_attente"
+
 
     class Config:
         populate_by_name = True

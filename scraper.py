@@ -9,6 +9,7 @@ Scraper intelligent de l'actualité burkinabè — VERSION SCRAPY v8
 - Nettoyage HTML avec BeautifulSoup
 """
 
+from asyncio import subprocess
 import os
 import re
 import sys
@@ -189,6 +190,7 @@ class MongoDBPipeline:
             self.collection.create_index("url", unique=True)
             self.collection.create_index("source")
             self.collection.create_index("date_publication")
+            self.collection.create_index("images")
             logger.info(" Connexion MongoDB — base : %s", MONGO_DB)
         except Exception as e:
             logger.critical(" MongoDB indisponible : %s", e)
@@ -296,7 +298,9 @@ class BurkinaNewsSpider(scrapy.Spider):
             if content_encoded and len(content_encoded) > 300:
                 corps = _nettoyer_html(content_encoded)
                 rss_direct += 1
-                yield self._build_item(source, meta, corps)
+                # Extraction images depuis le HTML du RSS
+                images = self._extraire_images_du_html(content_encoded, url)
+                item = self._build_item(source, meta, corps, images)
             else:
                 yield scrapy.Request(
                     url=url,
@@ -441,7 +445,15 @@ class BurkinaNewsSpider(scrapy.Spider):
             if not corps:
                 logger.warning("  [%s] Corps vide : %s", source["nom"], meta["url"])
 
-        item = self._build_item(source, meta, corps)
+
+        # ── EXTRACTION DES IMAGES (hors RTB) ──
+        images = []
+        if source["nom"] != "RTB":
+            images = self._extraire_images(response, domaine)
+            if images:
+                logger.info("  [%s] %d image(s) trouvée(s)", source["nom"], len(images))
+
+        item = self._build_item(source, meta, corps, images)
         yield item
 
     def _extraire_texte_scrapy(self, response, domaine: str) -> str:
@@ -555,7 +567,8 @@ class BurkinaNewsSpider(scrapy.Spider):
 
         corps_final = transcription or meta.get("resume_rss", "") or f"[Vidéo non transcrite - URL: {url_media}]"
 
-        item = self._build_item(source, meta, corps_final)
+        images = meta.get("images", [])
+        item = self._build_item(source, meta, corps_final, images)
         item["url_media"] = url_media
         item["type_contenu"] = "video"
         item["methode_transcription"] = methode
@@ -572,46 +585,38 @@ class BurkinaNewsSpider(scrapy.Spider):
             logger.info("  Téléchargement audio RTB...")
             chemin_audio = self._telecharger_audio_youtube(url_video)
             if not chemin_audio:
-                logger.error(" Échec téléchargement audio RTB")
+                logger.error("Échec téléchargement audio RTB")
                 return ""
         
             logger.info(" Audio téléchargé : %s", chemin_audio)
 
-            base_url = os.getenv("QWEN_BASE_URL", "http://localhost:11434/v1")
-            model = os.getenv("QWEN_MODEL", "qwen3.5:8b")
-            ollama_ok = False
-
-            try:
-                r = req_lib.get(f"{base_url}/models", timeout=5)
-                r.raise_for_status()
-                ollama_ok = True
-                logger.info(" Ollama/Qwen 3.5 disponible")
-            except Exception as e:
-                logger.warning("  Ollama non disponible : %s — tentative Whisper local...", e)
-
-            if ollama_ok:
+            # ── Étape 1 : Groq Whisper Large v3 ──────────────────────
+            groq_api_key = os.getenv("GROQ_API_KEY")
+            if groq_api_key:
                 try:
+                    from groq import Groq
+                    client = Groq(api_key=groq_api_key)
+                    logger.info(" Tentative Groq Whisper Large v3...")
                     with open(chemin_audio, "rb") as f:
-                        files = {"file": f}
-                        data = {
-                            "model": model,
-                            "language": "fr",
-                            "response_format": "text",
-                            "prompt": "Transcris ce journal télévisé en français."
-                        }
-                        r = req_lib.post(
-                            f"{base_url}/audio/transcriptions",
-                            files=files, data=data, timeout=300,
+                        result = client.audio.transcriptions.create(
+                            file=f,
+                            model="whisper-large-v3",
+                            language="fr",
+                            prompt="Transcription d'un journal télévisé burkinabè. Villes : Ouagadougou, Bobo-Dioulasso, Koudougou, Dédougou, Tenkodogo, Fada N'Gourma, Kaya, Ouahigouya.",
                         )
-                        r.raise_for_status()
-                        result = r.json()
-                        texte = result.get("text", "") if isinstance(result, dict) else str(result)
-                        if texte and len(texte) > 50:
-                            logger.info(" Transcription Qwen 3.5 OK (%d caractères)", len(texte))
-                            transcription = texte.strip()
+                    texte = result.text
+                    if texte and len(texte) > 50:
+                        logger.info(" Groq OK (%d caractères)", len(texte))
+                        transcription = texte.strip()
                 except Exception as e:
-                    logger.error(" Erreur Ollama transcription : %s", e)
+                    if "rate_limit" in str(e).lower() or "429" in str(e):
+                        logger.warning("  Groq limite atteinte — fallback Faster-Whisper...")
+                    else:
+                        logger.error(" Erreur Groq : %s", e)
+            else:
+                logger.warning("  GROQ_API_KEY non définie — fallback Faster-Whisper...")
 
+            # ── Étape 2 : Faster-Whisper local (fallback) ────────────
             if not transcription:
                 logger.info(" Fallback faster-whisper local...")
                 try:
@@ -620,15 +625,15 @@ class BurkinaNewsSpider(scrapy.Spider):
                     segments, _ = modele.transcribe(chemin_audio, language="fr", beam_size=5)
                     texte = " ".join(seg.text.strip() for seg in segments)
                     if texte:
-                        logger.info("✅ Whisper OK (%d caractères)", len(texte))
+                        logger.info(" Whisper OK (%d caractères)", len(texte))
                         transcription = texte.strip()
                 except Exception as e:
-                    logger.error("❌ Échec faster-whisper : %s", e)
+                    logger.error(" Échec faster-whisper : %s", e)
 
             return transcription
 
         except Exception as e:
-            logger.error("❌ Erreur pipeline RTB/Qwen : %s", e)
+            logger.error(" Erreur pipeline RTB : %s", e)
             return ""
 
         finally:
@@ -685,7 +690,7 @@ class BurkinaNewsSpider(scrapy.Spider):
             if "429" in str(e) or "Too Many Requests" in str(e) or "IP" in str(e):
                 logger.warning("  YouTube rate limit / IP bloquée")
             else:
-                logger.warning("⚠️  YouTube API échec : %s", e)
+                logger.warning("  YouTube API échec : %s", e)
             return ""
 
     def _transcrire_via_ytdlp(self, url_video: str) -> str:
@@ -776,9 +781,10 @@ class BurkinaNewsSpider(scrapy.Spider):
             logger.error(" Erreur détection média RTB %s : %s", meta["url"], e)
 
         if url_media:
+            meta["images"] = []  # RTB = vidéo, pas d'images illustratives
             yield from self._traiter_video(source, meta, url_media)
         else:
-            item = self._build_item(source, meta, meta.get("resume_rss", ""))
+            item = self._build_item(source, meta, meta.get("resume_rss", ""), [])
             item["url_media"] = None
             item["type_contenu"] = "video"
             item["methode_transcription"] = "no_media_found"
@@ -853,7 +859,7 @@ class BurkinaNewsSpider(scrapy.Spider):
         # Essai 2 : whisper-ctranslate2
         try:
             from faster_whisper import WhisperModel 
-            logger.info("🔁 Fallback whisper-ctranslate2…")
+            logger.info(" Fallback whisper-ctranslate2…")
             modele = WhisperModel("base", device="cpu", compute_type="int8")
             segments, info = modele.transcribe(chemin_audio, language="fr", beam_size=5)
             texte = " ".join(seg.text.strip() for seg in segments)
@@ -868,7 +874,144 @@ class BurkinaNewsSpider(scrapy.Spider):
 
     # ── Item builder ─────────────────────────────────────────────────────
 
-    def _build_item(self, source, meta, corps: str) -> dict:
+
+    def _extraire_images_du_html(self, html: str, base_url: str) -> list[str]:
+        """Extrait les URLs d'images depuis un fragment HTML (ex: content_encoded RSS)."""
+        from urllib.parse import urljoin
+        import re
+        images = []
+        vu = set()
+
+        def _add(url: str):
+            if not url or url in vu:
+                return
+            url_lower = url.lower()
+            exclusions = [
+                "logo", "icon", "avatar", "banner", "pub-", "advert",
+                "tracking", "pixel", "spacer", "blank", "emoji", "gif",
+                "gravatar", "wp-includes", "svg", "data:image"
+            ]
+            if any(exc in url_lower for exc in exclusions):
+                return
+            abs_url = urljoin(base_url, url)
+            vu.add(abs_url)
+            images.append(abs_url)
+
+        # Pattern pour src, data-src, data-lazy-src dans des balises img
+        patterns = [
+            r'<img[^>]+src=[\'"]([^\'"]+)[\'"]',
+            r'<img[^>]+data-src=[\'"]([^\'"]+)[\'"]',
+            r'<img[^>]+data-lazy-src=[\'"]([^\'"]+)[\'"]',
+            r'<img[^>]+data-original=[\'"]([^\'"]+)[\'"]',
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, html, re.IGNORECASE):
+                _add(match.group(1).strip())
+
+        # Pattern srcset
+        for match in re.finditer(r'<img[^>]+srcset=[\'"]([^\'"]+)[\'"]', html, re.IGNORECASE):
+            srcset = match.group(1)
+            first_url = srcset.split(",")[0].strip().split(" ")[0]
+            if first_url:
+                _add(first_url)
+
+        return images
+
+
+    def _extraire_images(self, response, domaine: str) -> list[str]:
+        """Extrait les URLs des images illustratives d'un article (hors RTB)."""
+        from urllib.parse import urljoin
+        images = []
+        vu = set()
+
+        def _add(url: str):
+            if not url or url in vu:
+                return
+            url_lower = url.lower()
+            exclusions = [
+                "logo", "icon", "avatar", "banner", "pub-", "advert",
+                "tracking", "pixel", "spacer", "blank", "emoji", "gif",
+                "gravatar", "wp-includes", "svg", "data:image"
+            ]
+            if any(exc in url_lower for exc in exclusions):
+                return
+            abs_url = urljoin(response.url, url)
+            vu.add(abs_url)
+            images.append(abs_url)
+
+        # Open Graph
+        og_image = response.css('meta[property="og:image"]::attr(content)').get()
+        if og_image:
+            _add(og_image)
+
+        # Twitter Card
+        tw_image = response.css('meta[name="twitter:image"]::attr(content)').get()
+        if tw_image:
+            _add(tw_image)
+
+        # Sélecteurs par site (avec lazy-loading)
+        selecteurs_par_site = {
+            "aib.media": [
+                "article .td-post-featured-image img",
+                ".td-post-content img",
+                "article img",
+                ".entry-content img",
+            ],
+            "sidwaya.info": [
+                ".entry-content img",
+                ".post-thumbnail img",
+                "article img",
+            ],
+            "lefaso.net": [
+                "#article .spip_logo img",
+                ".texte img",
+                "article img",
+            ],
+            "burkina24.com": [
+                ".entry-content img",
+                ".post-thumbnail img",
+                "article img",
+                ".wp-post-image",
+                "img.attachment-large",
+                "img.size-large",
+            ],
+        }
+
+        selecteurs = selecteurs_par_site.get(domaine, [])
+        selecteurs += [
+            ".entry-content img",
+            ".post-content img",
+            "article img",
+            "main img",
+            ".content img",
+            "figure img",
+            ".wp-post-image",
+            "img.attachment-large",
+        ]
+
+        for css in selecteurs:
+            for img in response.css(css):
+                # Essayer src, puis data-src, puis data-lazy-src, puis data-original
+                src = img.css("::attr(src)").get("")
+                if not src:
+                    src = img.css("::attr(data-src)").get("")
+                if not src:
+                    src = img.css("::attr(data-lazy-src)").get("")
+                if not src:
+                    src = img.css("::attr(data-original)").get("")
+                if src:
+                    _add(src.strip())
+                # Essayer srcset (prendre la première URL)
+                srcset = img.css("::attr(srcset)").get("")
+                if srcset:
+                    first_url = srcset.split(",")[0].strip().split(" ")[0]
+                    if first_url:
+                        _add(first_url)
+
+        logger.debug("  [%s] Images trouvées avant filtrage : %d", domaine, len(images))
+        return images
+
+    def _build_item(self, source, meta, corps: str, images: list = None) -> dict:
         url = meta["url"]
         return {
             "source":             source["nom"],
@@ -880,6 +1023,7 @@ class BurkinaNewsSpider(scrapy.Spider):
             "date_publication":   meta["date_pub"],
             "resume_rss":         meta.get("resume_rss", ""),
             "corps":              corps,
+            "images":             images or [],
             "date_scraping":      datetime.now(timezone.utc),
             "statut_paraphrase":  "en_attente",
             "statut_resume":      "en_attente",
@@ -900,10 +1044,16 @@ def run_single_cycle():
     duree = (datetime.now() - debut).total_seconds()
     logger.info(" Cycle terminé en %.1f secondes", duree)
 
+    # Déclenche le pipeline IA après chaque cycle de scraping
+    logger.info(" Lancement pipeline IA...")
+
+    import subprocess
+    subprocess.Popen(["python", "PipelineIA.py"])
+
 
 def main_scheduler():
     multiprocessing.set_start_method("spawn", force=True)
-    logger.info("⏱  Premier cycle immédiat…")
+    logger.info("  Premier cycle immédiat…")
     p = multiprocessing.Process(target=run_single_cycle)
     p.start()
     p.join()
