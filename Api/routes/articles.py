@@ -21,7 +21,7 @@ def format_article(doc: dict) -> dict:
 @router.get("/", response_model=List[ArticleTraiteResume])
 async def get_articles(
     page: int = Query(1, ge=1),
-    limite: int = Query(20, ge=1, le=100),
+    limite: int = Query(40, ge=1, le=100),
     source: str = Query(None, description="Filtrer par source ex: sidwaya.info")
 ):
     """

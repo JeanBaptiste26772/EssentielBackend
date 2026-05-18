@@ -268,7 +268,6 @@ class BurkinaNewsSpider(scrapy.Spider):
                     logger.error(" %s : aucun flux accessible et pas de fallback", source["nom"])
 
     def _yield_texte(self, source, flux):
-        rss_direct = 0
         for entree in flux.entries:
             url = entree.get("link", "").strip()
             if not url or url in self.seen_urls:
@@ -292,24 +291,17 @@ class BurkinaNewsSpider(scrapy.Spider):
                 "url": url,
                 "date_pub": date_pub,
                 "resume_rss": _nettoyer_html(resume),
-                "content_encoded": content_encoded,
+                "content_encoded": content_encoded,  # Conservé pour le fallback Lefaso
             }
 
-            if content_encoded and len(content_encoded) > 300:
-                corps = _nettoyer_html(content_encoded)
-                rss_direct += 1
-                # Extraction images depuis le HTML du RSS
-                images = self._extraire_images_du_html(content_encoded, url)
-                item = self._build_item(source, meta, corps, images)
-            else:
-                yield scrapy.Request(
-                    url=url,
-                    callback=self.parse_texte,
-                    meta=meta,
-                    errback=self._handle_error,
-                    dont_filter=True,
-                )
-        logger.info(" %s : %d articles insérés directement depuis RSS", source["nom"], rss_direct)
+            # Toujours visiter la page pour avoir le vrai corps + les vraies images
+            yield scrapy.Request(
+                url=url,
+                callback=self.parse_texte,
+                meta=meta,
+                errback=self._handle_error,
+                dont_filter=True,
+            )
 
     def _yield_video(self, source, flux):
         for entree in flux.entries:
@@ -440,16 +432,46 @@ class BurkinaNewsSpider(scrapy.Spider):
         corps = self._extraire_texte_scrapy(response, domaine)
         if not corps or len(corps) < 200:
             corps = self._extraire_generique(response)
+        
+        # Filtre boilerplate Lefaso
+        if source["nom"] == "Lefaso.net":
+            BOILERPLATE = [
+                "Ce forum est modéré",
+                "Inscrivez vous et recevez",
+                "L'abonnement est gratuit",
+                "Nos applications mobiles",
+                "Suivez nous sur les réseaux sociaux",
+                "Pour créer des paragraphes, laissez simplement des lignes vides",
+                "Veuillez laisser ce champ vide",
+                "Nous contacter",
+            ]
+            if any(phrase in corps for phrase in BOILERPLATE) and len(corps) < 600:
+                content_encoded = meta.get("content_encoded", "")
+                if content_encoded and len(content_encoded) > 100:
+                    corps = _nettoyer_html(content_encoded)
+                    logger.info("  [%s] Corps remplacé par content_encoded", source["nom"])
+                else:
+                    corps = meta.get("resume_rss", "")
+                    logger.info("  [%s] Corps remplacé par resume_rss", source["nom"])
+
         if not corps or len(corps) < 200:
             corps = meta.get("resume_rss", "")
             if not corps:
                 logger.warning("  [%s] Corps vide : %s", source["nom"], meta["url"])
 
-
-        # ── EXTRACTION DES IMAGES (hors RTB) ──
+        # Extraction images (page + fallback RSS)
         images = []
         if source["nom"] != "RTB":
             images = self._extraire_images(response, domaine)
+            
+            if not images:
+                content_encoded = meta.get("content_encoded", "")
+                if content_encoded:
+                    images_rss = self._extraire_images_du_html(content_encoded, response.url)
+                    if images_rss:
+                        images = images_rss
+                        logger.info("  [%s] %d image(s) depuis RSS fallback", source["nom"], len(images))
+            
             if images:
                 logger.info("  [%s] %d image(s) trouvée(s)", source["nom"], len(images))
 
@@ -464,8 +486,7 @@ class BurkinaNewsSpider(scrapy.Spider):
             ],
             "sidwaya.info": [".entry-content", ".td-post-content", ".post-content", "article"],
             "lefaso.net": [
-                ".texte", "#article .texte", ".contenu-principal .texte",
-                "#contenu .texte", ".spip_texte", "#spip_article .spip_texte", "article",
+                "div.article_content",
             ],
             "burkina24.com": [".entry-content", ".td-post-content", ".post-content", "article"],
         }.get(domaine, [])
