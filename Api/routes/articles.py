@@ -12,6 +12,7 @@ router = APIRouter()
 
 def format_article(doc: dict) -> dict:
     """Convertit l'_id ObjectId MongoDB en string"""
+    doc["id"] = str(doc["_id"])
     doc["_id"] = str(doc["_id"])
     doc["a_audio"] = bool(doc.get("audio_moore_url"))
     doc["a_moore"] = bool(doc.get("resume_moore"))

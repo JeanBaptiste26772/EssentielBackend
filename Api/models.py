@@ -8,7 +8,7 @@ class ArticleResume(BaseModel):
     Version allégée pour la liste d'articles (chargement rapide au lancement de l'app).
     Contient seulement ce dont l'interface a besoin pour afficher la liste.
     """
-    id: str = Field(..., alias="_id")
+    id: str 
     titre: str
     source: str                         # ex: AIB, Sidwaya, Lefaso.net
     domaine: str                        # ex: aib.media, sidwaya.info
@@ -28,7 +28,7 @@ class ArticleDetail(BaseModel):
     Version complète retournée quand l'utilisateur clique sur un article.
     Contient le corps complet + les enrichissements IA ajoutés après scraping.
     """
-    id: str = Field(..., alias="_id")
+    id: str 
     titre: str
     source: str
     domaine: str
@@ -60,7 +60,7 @@ class ArticleDetail(BaseModel):
 
 class ArticleTraiteResume(BaseModel):
     """Version allégée pour la liste — basée sur articles_traites"""
-    id: str = Field(..., alias="_id")
+    id: str 
     titre: str
     categorie: str
     resume_fr: str
@@ -78,7 +78,7 @@ class ArticleTraiteResume(BaseModel):
 
 class ArticleTraiteDetail(BaseModel):
     """Version complète quand l'utilisateur clique"""
-    id: str = Field(..., alias="_id")
+    id: str 
     titre: str
     categorie: str
     resume_fr: str
@@ -89,6 +89,7 @@ class ArticleTraiteDetail(BaseModel):
     date_publication: Optional[datetime] = None
     date_traitement: datetime
     statut_tts: str = "en_attente"
+    corps: Optional[str] = None
 
 
     class Config:
