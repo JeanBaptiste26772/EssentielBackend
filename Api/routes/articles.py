@@ -1,8 +1,5 @@
-from pydoc import doc
-
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from Api.database import get_db
-#from Api.models import ArticleDetail, ArticleResume
 from Api.models import ArticleTraiteDetail, ArticleTraiteResume
 from bson import ObjectId
 from typing import List
@@ -21,6 +18,7 @@ def format_article(doc: dict) -> dict:
 
 @router.get("/", response_model=List[ArticleTraiteResume])
 async def get_articles(
+    response: Response,
     page: int = Query(1, ge=1),
     limite: int = Query(40, ge=1, le=100),
     source: str = Query(None, description="Filtrer par source ex: sidwaya.info")
@@ -34,8 +32,11 @@ async def get_articles(
     if source:
         filtre["source"] = source
 
+    # Compte total pour pagination
+    total = await db.articles_traites.count_documents(filtre)
+    response.headers["X-Total-Count"] = str(total)
+
     skip = (page - 1) * limite
-    #cursor = db.articles.find(filtre).sort("date_publication", -1).skip(skip).limit(limite)
     cursor = db.articles_traites.find(filtre).sort("date_publication", -1).skip(skip).limit(limite)
     articles = await cursor.to_list(length=limite)
 
@@ -55,7 +56,6 @@ async def get_article(article_id: str):
     except Exception:
         raise HTTPException(status_code=400, detail="ID invalide")
 
-    #article = await db.articles.find_one({"_id": oid})
     article = await db.articles_traites.find_one({"_id": oid})
     if not article:
         raise HTTPException(status_code=404, detail="Article introuvable")
