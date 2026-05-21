@@ -69,12 +69,7 @@ SOURCES = [
         "type":    "rss_texte",
         "domaine": "burkina24.com",
     },
-    {
-        "nom":     "RTB",
-        "urls":    ["https://www.rtb.bf/feed/"],
-        "type":    "rss_video",
-        "domaine": "rtb.bf",
-    },
+    
 ]
 
 HEADERS = {

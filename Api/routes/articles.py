@@ -43,6 +43,38 @@ async def get_articles(
     return [format_article(a) for a in articles]
 
 
+@router.get("/evenements")
+async def get_evenements(
+    limite: int = Query(20, ge=1, le=50),
+    type_event: str = Query(None, description="Filtrer par type: security, economy, politics, health, sport")
+):
+    """
+    Retourne les événements géolocalisés pour la carte interactive.
+    """
+    db = get_db()
+    filtre = {"coordonnees": {"$exists": True}}
+    
+    if type_event:
+        filtre["type_evenement"] = type_event
+
+    cursor = db.articles_traites.find(filtre).sort("date_publication", -1).limit(limite)
+    evenements = await cursor.to_list(length=limite)
+
+    return [
+        {
+            "id": str(doc["_id"]),
+            "title": doc.get("titre", "Sans titre"),
+            "location": doc.get("localisation", "Inconnu"),
+            "type": doc.get("type_evenement", "politics"),
+            "x": doc.get("coordonnees", {}).get("x", 50),
+            "y": doc.get("coordonnees", {}).get("y", 50),
+            "date": doc.get("date_publication"),
+            "resume": doc.get("resume_fr", "")[:200],
+        }
+        for doc in evenements
+    ]
+
+
 @router.get("/{article_id}", response_model=ArticleTraiteDetail)
 async def get_article(article_id: str):
     """
@@ -61,3 +93,4 @@ async def get_article(article_id: str):
         raise HTTPException(status_code=404, detail="Article introuvable")
 
     return format_article(article)
+

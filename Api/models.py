@@ -90,6 +90,9 @@ class ArticleTraiteDetail(BaseModel):
     date_traitement: datetime
     statut_tts: str = "en_attente"
     corps: Optional[str] = None
+    localisation: Optional[str] = None
+    type_evenement: Optional[str] = None
+    coordonnees: Optional[dict] = None
 
 
     class Config:

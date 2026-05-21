@@ -93,6 +93,7 @@ def _ollama_generate(prompt: str, system: str = "", max_tokens: int = 512) -> st
                 temperature=0.3,
             )
             texte = response.choices[0].message.content.strip()
+            time.sleep(2)
             if texte:
                 return texte
         except Exception as e:
@@ -419,6 +420,43 @@ Donne UNIQUEMENT le résumé fusionné, sans introduction ni commentaire."""
         images=images_merge,  # ← AJOUTE CETTE LIGNE
     )
 
+def extraire_localisation(titre: str, resume: str) -> dict:
+    """Extrait ville, type et coordonnées depuis le contenu."""
+    prompt = f"""Analyse cet article de presse burkinabè et extrais :
+1. La ville ou région principale mentionnée
+2. Le type d'événement (security, economy, politics, health, sport)
+3. Une estimation des coordonnées x,y (0-100) sur une carte du Burkina Faso
+
+Titre : {titre}
+Contenu : {resume[:1000]}
+
+Réponds STRICTEMENT en JSON :
+{{"ville": "Ouagadougou", "type": "politics", "x": 52, "y": 48}}
+
+Types valides : security, economy, politics, health, sport
+Coordonnées approximatives :
+- Ouagadougou : x=52, y=48
+- Bobo-Dioulasso : x=35, y=55
+- Kaya : x=55, y=35
+- Fada N'Gourma : x=75, y=45
+- Dori : x=70, y=30
+- Gorom-Gorom : x=65, y=20
+- Dedougou : x=40, y=45
+- Koudougou : x=45, y=50
+- Banfora : x=30, y=60
+- Gaoua : x=25, y=55"""
+
+    reponse = _ollama_generate(prompt, max_tokens=128)
+    try:
+        match = re.search(r'\{.*?\}', reponse, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+    except Exception as e:
+        logger.error(" Erreur parsing localisation : %s", e)
+    
+    # Fallback
+    return {"ville": "Inconnu", "type": "politics", "x": 50, "y": 50}
+
 
 def _construire_article_traite(
     titre: str,
@@ -430,6 +468,7 @@ def _construire_article_traite(
     images: list[str] = None,
 ) -> dict:
     """Construit le document final pour articles_traites."""
+    geo = extraire_localisation(titre, resume_fr)
     return {
         "titre":            titre,
         "categorie":        categorie,
@@ -443,6 +482,9 @@ def _construire_article_traite(
         "date_traitement":  datetime.now(timezone.utc),
         "statut_tts":       "en_attente",
         "hash":             hashlib.md5(titre.encode()).hexdigest(),
+        "localisation":     geo["ville"],
+        "type_evenement":   geo["type"],
+        "coordonnees":      {"x": geo["x"], "y": geo["y"]},
     }
 
 
@@ -536,22 +578,11 @@ def run_pipeline():
     # ── Traitement spécial RTB ───────────────────────────────────────────────
     articles_a_traiter = []
     for art in articles_bruts:
-        if art.get("source") == "RTB" and art.get("type_contenu") == "video":
-            logger.info("🎬 Découpe RTB : %s", art.get("titre", "?")[:60])
-            sujets = classifier_sujets_rtb(art.get("corps", ""))
-            for sujet in sujets:
-                articles_a_traiter.append({
-                    "titre":            sujet.get("titre", "Sujet RTB"),
-                    "corps":            sujet.get("resume", ""),
-                    "source":           "RTB",
-                    "url":              art.get("url", ""),
-                    "date_publication": art.get("date_publication"),
-                    "_categorie":       sujet.get("categorie", "Autre"),
-                    "_origine_id":      art.get("_id"),
-                    "images": [],
-                })
-        else:
-            articles_a_traiter.append(art)
+        if art.get("source") == "RTB" :
+            logger.info("RTB ignore: %s", art.get("titre", "?")[:60])
+            continue 
+        
+        articles_a_traiter.append(art)
 
     # ── Classification articles non-RTB ─────────────────────────────────────
     logger.info("  Classification de %d articles...", len(articles_a_traiter))
@@ -591,7 +622,7 @@ def run_pipeline():
     # ── TTS Mooré + sauvegarde ───────────────────────────────────────────────
     sauvegardes = 0
     for art in articles_finals:
-        texte_moore, url_audio = traduire_et_synthetiser_moore(art["resume_fr"])
+        texte_moore, url_audio ="",""
         art["resume_moore"]    = texte_moore
         art["audio_moore_url"] = url_audio
         art["statut_tts"]      = "genere" if url_audio else "en_attente"
@@ -599,7 +630,10 @@ def run_pipeline():
         try:
             col_traites.update_one(
                 {"hash": art["hash"]},
-                {"$setOnInsert": art},
+                {
+                    "$setOnInsert": {k: v for k, v in art.items() if k != "sources"},
+                    "$addToSet": {"sources": {"$each": art["sources"]}},
+                },
                 upsert=True,
             )
             sauvegardes += 1
@@ -620,7 +654,7 @@ def run_pipeline():
 
     duree = (datetime.now() - debut).total_seconds()
     logger.info(
-        "🏁 Pipeline terminé en %.1fs — %d articles sauvegardés sur %d produits",
+        " Pipeline terminé en %.1fs — %d articles sauvegardés sur %d produits",
         duree, sauvegardes, len(articles_finals)
     )
     client.close()
