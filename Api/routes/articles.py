@@ -3,6 +3,7 @@ from Api.database import get_db
 from Api.models import ArticleTraiteDetail, ArticleTraiteResume
 from bson import ObjectId
 from typing import List
+from datetime import datetime, timezone
 
 router = APIRouter()
 
@@ -41,6 +42,36 @@ async def get_articles(
     articles = await cursor.to_list(length=limite)
 
     return [format_article(a) for a in articles]
+
+
+@router.get("/essentiel/aujourd-hui")
+async def get_essentiel_du_jour():
+    """
+    Retourne l'essentiel du jour depuis la collection essentiel_du_jour.
+    """
+    db = get_db()
+    aujourd_hui = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    doc = await db.essentiel_du_jour.find_one(
+        {"date": {"$gte": aujourd_hui}},
+        sort=[("date_generation", -1)]
+    )
+    
+    if not doc:
+        raise HTTPException(status_code=404, detail="Aucun essentiel disponible aujourd'hui")
+    
+    # Découper le texte en paragraphes
+    texte = doc.get("essentiel_fr", "")
+    points = [p.strip() for p in texte.split("\n\n") if p.strip()]
+    
+    return {
+        "date_str":      doc.get("date_str", ""),
+        "points":        points,
+        "essentiel_moore": doc.get("essentiel_moore", ""),
+        "audio_moore_url": doc.get("audio_moore_url", ""),
+        "nb_articles":   doc.get("nb_articles", 0),
+        "date_generation": doc.get("date_generation"),
+    }
 
 
 @router.get("/evenements")

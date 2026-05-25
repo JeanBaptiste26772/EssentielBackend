@@ -1,2 +1,3 @@
 MONGO_URI=mongodb://localhost:27017
 MONGO_DB=burkina_news
+COHERE_API_KEY=i3vxIvO4HbRxjLeT0UoZthViyYfBgUj3ohIZqTwh
