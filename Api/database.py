@@ -1,4 +1,5 @@
 import os
+import certifi
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 from pathlib import Path
@@ -15,7 +16,11 @@ db = None
 
 async def connect_db():
     global client, db
-    client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    client = AsyncIOMotorClient(
+        MONGO_URI,
+        serverSelectionTimeoutMS=5000,
+        tlsCAFile=certifi.where()  # ← UN SEUL client, avec certifi
+    )
     db = client[MONGO_DB]
     print(f"✅ API connectée à MongoDB — base : {MONGO_DB}, collection : {MONGO_COL}")
 
