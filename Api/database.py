@@ -17,9 +17,9 @@ async def connect_db():
     global client, db
     client = AsyncIOMotorClient(
         MONGO_URI,
-        serverSelectionTimeoutMS=5000,
-        tls=True,
-        tlsAllowInvalidCertificates=True
+        serverSelectionTimeoutMS=10000,
+        connectTimeoutMS=20000,
+        socketTimeoutMS=20000,
     )
     db = client[MONGO_DB]
     print(f"✅ API connectée à MongoDB — base : {MONGO_DB}, collection : {MONGO_COL}")
