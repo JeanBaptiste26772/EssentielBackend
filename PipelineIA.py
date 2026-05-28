@@ -94,9 +94,9 @@ def _get_embedding(texte: str) -> list[float] | None:
                 return vecteur
         except Exception as e:
             if "429" in str(e) or "rate" in str(e).lower():
-                logger.warning("⚠️  Cohere rate limit — fallback Ollama...")
+                logger.warning("  Cohere rate limit — fallback Ollama...")
             else:
-                logger.error("❌ Cohere embedding erreur : %s — fallback Ollama", e)
+                logger.error(" Cohere embedding erreur : %s — fallback Ollama", e)
     elif not COHERE_API_KEY:
         logger.debug("COHERE_API_KEY non définie — Ollama utilisé")
 
@@ -449,39 +449,71 @@ def _extraire_source(art: dict) -> dict:
 
 
 def extraire_localisation(titre: str, resume: str) -> dict:
-    """Extrait ville, type et coordonnées depuis le contenu."""
+    
+    # ── Étape 1 : LLM trouve la ville et le type ──────────────────────
     prompt = f"""Analyse cet article de presse burkinabè et extrais :
 1. La ville ou région principale mentionnée
 2. Le type d'événement (security, economy, politics, health, sport)
-3. Une estimation des coordonnées x,y (0-100) sur une carte du Burkina Faso
 
 Titre : {titre}
 Contenu : {resume[:1000]}
 
 Réponds STRICTEMENT en JSON :
-{{"ville": "Ouagadougou", "type": "politics", "x": 52, "y": 48}}
+{{"ville": "Ouagadougou", "type": "politics"}}
 
-Types valides : security, economy, politics, health, sport
-Coordonnées approximatives :
-- Ouagadougou : x=52, y=48
-- Bobo-Dioulasso : x=35, y=55
-- Kaya : x=55, y=35
-- Fada N'Gourma : x=75, y=45
-- Dori : x=70, y=30
-- Gorom-Gorom : x=65, y=20
-- Dedougou : x=40, y=45
-- Koudougou : x=45, y=50
-- Banfora : x=30, y=60
-- Gaoua : x=25, y=55"""
+Types valides : security, economy, politics, health, sport"""
 
-    reponse = _llm_generate(prompt, max_tokens=128)
+    reponse = _llm_generate(prompt, max_tokens=64)
+    
+    ville = "Ouagadougou"
+    type_evt = "politics"
+    
     try:
         match = re.search(r'\{.*?\}', reponse, re.DOTALL)
         if match:
-            return json.loads(match.group())
+            data = json.loads(match.group())
+            ville = data.get("ville", "Ouagadougou")
+            type_evt = data.get("type", "politics")
     except Exception as e:
         logger.error("❌ Erreur parsing localisation : %s", e)
-    return {"ville": "Inconnu", "type": "politics", "x": 50, "y": 50}
+
+    # ── Étape 2 : Nominatim trouve les vraies coordonnées ─────────────
+    coords = _geocoder_ville(ville)
+    
+    return {
+        "ville":    ville,
+        "type":     type_evt,
+        "lat":      coords["lat"] if coords else 12.3647,  # fallback Ouaga
+        "lon":      coords["lon"] if coords else -1.5332,
+    }
+
+
+def _geocoder_ville(ville: str) -> dict | None:
+    """Trouve lat/lon d'une ville via Nominatim (OpenStreetMap)."""
+    try:
+        time.sleep(1)  # Respect limite 1 req/sec
+        r = req_lib.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={
+                "q":      f"{ville}, Burkina Faso",
+                "format": "json",
+                "limit":  1,
+            },
+            headers={"User-Agent": "BurkinaNews/1.0"},
+            timeout=10,
+        )
+        data = r.json()
+        if data:
+            lat = float(data[0]["lat"])
+            lon = float(data[0]["lon"])
+            logger.info(" Géocodage OK : %s → lat=%.4f, lon=%.4f", ville, lat, lon)
+            return {"lat": lat, "lon": lon}
+        else:
+            logger.warning("  Ville non trouvée : %s", ville)
+            return None
+    except Exception as e:
+        logger.error(" Nominatim erreur : %s", e)
+        return None
 
 
 def _construire_article_traite(
@@ -510,7 +542,7 @@ def _construire_article_traite(
         "hash":             hashlib.md5(titre.encode()).hexdigest(),
         "localisation":     geo["ville"],
         "type_evenement":   geo["type"],
-        "coordonnees":      {"x": geo["x"], "y": geo["y"]},
+        "coordonnees":      {"lat": geo["lat"], "lon": geo["lon"]},
     }
 
 
@@ -530,9 +562,9 @@ def traduire_et_synthetiser_moore(resume_fr: str) -> tuple[str, str]:
 Texte : {resume_fr}
 Donne UNIQUEMENT la traduction en Mooré, sans explication."""
         texte_moore = _llm_generate(prompt, max_tokens=max_tokens)
-        logger.info("✅ Traduction Mooré OK (%d caractères)", len(texte_moore or ""))
+        logger.info(" Traduction Mooré OK (%d caractères)", len(texte_moore or ""))
     except Exception as e:
-        logger.error("❌ Erreur traduction Mooré : %s", e)
+        logger.error(" Erreur traduction Mooré : %s", e)
 
     # ── TTS Mooré via modèle local ───────────────────────────────────────────
     # TODO : Intégrer ton modèle TTS local ici

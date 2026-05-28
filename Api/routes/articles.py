@@ -97,8 +97,8 @@ async def get_evenements(
             "title": doc.get("titre", "Sans titre"),
             "location": doc.get("localisation", "Inconnu"),
             "type": doc.get("type_evenement", "politics"),
-            "x": doc.get("coordonnees", {}).get("x", 50),
-            "y": doc.get("coordonnees", {}).get("y", 50),
+            "lat": doc.get("coordonnees", {}).get("lat", 12.3647),
+            "lon": doc.get("coordonnees", {}).get("lon", -1.5332),
             "date": doc.get("date_publication"),
             "resume": doc.get("resume_fr", "")[:200],
         }

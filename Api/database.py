@@ -1,12 +1,14 @@
 import os
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(dotenv_path=env_path, override=True)
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
-MONGO_DB  = os.getenv("MONGO_DB", "burkina_news")   # ← même valeur que le scraper
-MONGO_COL = "articles"                               # ← même collection que le scraper
+MONGO_DB  = os.getenv("MONGO_DB", "burkina_news")
+MONGO_COL = "articles"
 
 client: AsyncIOMotorClient = None
 db = None
