@@ -183,6 +183,23 @@ async def get_essentiel_par_date(annee: int, mois: int, jour: int):
         "date_generation":  doc.get("date_generation"),
     }
 
+@router.get("/essentiel/debug/{annee}-{mois:02d}-{jour:02d}")
+async def debug_essentiel(annee: int, mois: int, jour: int):
+    db = get_db()
+    # Cherche sans filtre de date, juste les 5 derniers docs
+    docs = await db.essentiel_du_jour.find(
+        {}, {"date": 1, "date_str": 1, "date_generation": 1}
+    ).sort("date", -1).limit(5).to_list(5)
+    
+    return [
+        {
+            "date": str(doc.get("date")),
+            "date_str": doc.get("date_str"),
+            "date_generation": str(doc.get("date_generation")),
+            "id": str(doc["_id"])
+        }
+        for doc in docs
+    ]
 
 # ⚠️ DOIT RESTER EN DERNIER — capture tout /{id} et doit pas intercepter les routes essentiel
 @router.get("/{article_id}", response_model=ArticleTraiteDetail)
