@@ -26,6 +26,10 @@ import requests as req_lib
 import scrapy
 from scrapy.crawler import CrawlerProcess
 from pymongo import MongoClient, errors as mongo_errors
+from dotenv import load_dotenv
+from pathlib import Path
+
+load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 # ─── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(

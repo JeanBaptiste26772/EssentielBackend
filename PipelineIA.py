@@ -22,6 +22,23 @@ from datetime import datetime, timezone, timedelta
 from pymongo import MongoClient, errors as mongo_errors
 import requests as req_lib
 from groq import Groq
+from dotenv import load_dotenv
+from pathlib import Path
+
+
+
+# Debug — affiche ce qui est chargé
+env_path = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=env_path, override=True)
+print(f"🔍 Chemin .env : {env_path}")
+print(f"🔍 Existe : {env_path.exists()}")
+# Vérifie que c'est bien chargé
+print(f"🔍 MONGO_URI : {os.getenv('MONGO_URI', 'NON TROUVÉ')[:60]}")
+
+
+
+
+
 
 # ─── Cohere ──────────────────────────────────────────────────────────────────
 try:
@@ -723,7 +740,10 @@ def run_pipeline():
 
     # ── Connexion MongoDB ────────────────────────────────────────────────────
     try:
-        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        client = MongoClient(
+        MONGO_URI,
+        serverSelectionTimeoutMS=10000,  # juste augmenter le timeout
+        )
         client.admin.command("ping")
         db = client[MONGO_DB]
         col_bruts    = db[COL_BRUTS]
