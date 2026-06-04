@@ -33,7 +33,6 @@ async def get_articles(
     if source:
         filtre["source"] = source
 
-    # Compte total pour pagination
     total = await db.articles_traites.count_documents(filtre)
     response.headers["X-Total-Count"] = str(total)
 
@@ -51,25 +50,24 @@ async def get_essentiel_du_jour():
     """
     db = get_db()
     aujourd_hui = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    
+
     doc = await db.essentiel_du_jour.find_one(
         {"date": {"$gte": aujourd_hui}},
         sort=[("date_generation", -1)]
     )
-    
+
     if not doc:
         raise HTTPException(status_code=404, detail="Aucun essentiel disponible aujourd'hui")
-    
-    # Découper le texte en paragraphes
+
     texte = doc.get("essentiel_fr", "")
     points = [p.strip() for p in texte.split("\n\n") if p.strip()]
-    
+
     return {
-        "date_str":      doc.get("date_str", ""),
-        "points":        points,
+        "date_str":        doc.get("date_str", ""),
+        "points":          points,
         "essentiel_moore": doc.get("essentiel_moore", ""),
         "audio_moore_url": doc.get("audio_moore_url", ""),
-        "nb_articles":   doc.get("nb_articles", 0),
+        "nb_articles":     doc.get("nb_articles", 0),
         "date_generation": doc.get("date_generation"),
     }
 
@@ -84,7 +82,7 @@ async def get_evenements(
     """
     db = get_db()
     filtre = {"coordonnees": {"$exists": True}}
-    
+
     if type_event:
         filtre["type_evenement"] = type_event
 
@@ -93,37 +91,18 @@ async def get_evenements(
 
     return [
         {
-            "id": str(doc["_id"]),
-            "title": doc.get("titre", "Sans titre"),
+            "id":       str(doc["_id"]),
+            "title":    doc.get("titre", "Sans titre"),
             "location": doc.get("localisation", "Inconnu"),
-            "type": doc.get("type_evenement", "politics"),
-            "lat": doc.get("coordonnees", {}).get("lat", 12.3647),
-            "lon": doc.get("coordonnees", {}).get("lon", -1.5332),
-            "date": doc.get("date_publication"),
-            "resume": doc.get("resume_fr", "")[:200],
+            "type":     doc.get("type_evenement", "politics"),
+            "lat":      doc.get("coordonnees", {}).get("lat", 12.3647),
+            "lon":      doc.get("coordonnees", {}).get("lon", -1.5332),
+            "date":     doc.get("date_publication"),
+            "resume":   doc.get("resume_fr", "")[:200],
         }
         for doc in evenements
     ]
 
-
-@router.get("/{article_id}", response_model=ArticleTraiteDetail)
-async def get_article(article_id: str):
-    """
-    Retourne le détail complet d'un article :
-    résumé français + traduction mooré + opinion.
-    Appelé quand l'utilisateur clique sur un article.
-    """
-    db = get_db()
-    try:
-        oid = ObjectId(article_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="ID invalide")
-
-    article = await db.articles_traites.find_one({"_id": oid})
-    if not article:
-        raise HTTPException(status_code=404, detail="Article introuvable")
-
-    return format_article(article)
 
 @router.get("/essentiel/dates")
 async def get_essentiel_dates(
@@ -151,11 +130,11 @@ async def get_essentiel_dates(
 
     return [
         {
-            "jour":          doc["date"].day,
-            "mois":          doc["date"].month,
-            "annee":         doc["date"].year,
-            "nb_articles":   doc.get("nb_articles", 0),
-            "categories":    doc.get("categories_du_jour", []),
+            "jour":             doc["date"].day,
+            "mois":             doc["date"].month,
+            "annee":            doc["date"].year,
+            "nb_articles":      doc.get("nb_articles", 0),
+            "categories":       doc.get("categories_du_jour", []),
             "nb_regenerations": doc.get("nb_regenerations", 1),
         }
         for doc in docs
@@ -190,16 +169,37 @@ async def get_essentiel_par_date(annee: int, mois: int, jour: int):
     points = [p.strip() for p in texte.split("\n\n") if p.strip()]
 
     return {
-        "date_str":        doc.get("date_str", ""),
-        "jour":            jour,
-        "mois":            mois,
-        "annee":           annee,
-        "points":          points,
-        "essentiel_fr":    texte,
-        "essentiel_moore": doc.get("essentiel_moore", ""),
-        "audio_moore_url": doc.get("audio_moore_url", ""),
-        "nb_articles":     doc.get("nb_articles", 0),
-        "categories":      doc.get("categories_du_jour", []),
+        "date_str":         doc.get("date_str", ""),
+        "jour":             jour,
+        "mois":             mois,
+        "annee":            annee,
+        "points":           points,
+        "essentiel_fr":     texte,
+        "essentiel_moore":  doc.get("essentiel_moore", ""),
+        "audio_moore_url":  doc.get("audio_moore_url", ""),
+        "nb_articles":      doc.get("nb_articles", 0),
+        "categories":       doc.get("categories_du_jour", []),
         "nb_regenerations": doc.get("nb_regenerations", 1),
-        "date_generation": doc.get("date_generation"),
+        "date_generation":  doc.get("date_generation"),
     }
+
+
+# ⚠️ DOIT RESTER EN DERNIER — capture tout /{id} et doit pas intercepter les routes essentiel
+@router.get("/{article_id}", response_model=ArticleTraiteDetail)
+async def get_article(article_id: str):
+    """
+    Retourne le détail complet d'un article :
+    résumé français + traduction mooré + opinion.
+    Appelé quand l'utilisateur clique sur un article.
+    """
+    db = get_db()
+    try:
+        oid = ObjectId(article_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="ID invalide")
+
+    article = await db.articles_traites.find_one({"_id": oid})
+    if not article:
+        raise HTTPException(status_code=404, detail="Article introuvable")
+
+    return format_article(article)
