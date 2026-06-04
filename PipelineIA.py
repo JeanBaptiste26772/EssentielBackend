@@ -606,14 +606,13 @@ Donne UNIQUEMENT la traduction en Mooré, sans explication."""
 
 def generer_essentiel_du_jour(col_traites, col_essentiel):
     """
-    Analyse TOUS les articles traités du jour et génère :
-    - Un essentiel en français : quelques paragraphes captivants sur ce qu'il faut retenir
-    - Une traduction en Mooré
-    - Un placeholder audio TTS
-    
-    Sauvegardé dans la collection 'essentiel_du_jour'.
+    Génère ou régénère l'essentiel du jour en intégrant TOUS les articles
+    traités depuis minuit. Chaque exécution du pipeline met à jour le même
+    document pour la journée en cours (jamais d'écrasement inter-journées).
     """
-    aujourd_hui = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    aujourd_hui = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     demain = aujourd_hui + timedelta(days=1)
 
     articles_du_jour = list(col_traites.find(
@@ -622,12 +621,11 @@ def generer_essentiel_du_jour(col_traites, col_essentiel):
     ))
 
     if not articles_du_jour:
-        logger.info("  Essentiel du jour : aucun article aujourd'hui")
+        logger.info("⏭  Essentiel du jour : aucun article aujourd'hui")
         return
 
-    logger.info(" Génération essentiel du jour — %d articles analysés", len(articles_du_jour))
+    logger.info("📰 Génération essentiel du jour — %d articles analysés", len(articles_du_jour))
 
-    # Préparer le contenu pour le LLM
     contenu_articles = "\n\n".join([
         f"[{a.get('categorie', '?')} — {a.get('localisation', '?')}]\n"
         f"Titre : {a.get('titre', '')}\n"
@@ -637,7 +635,6 @@ def generer_essentiel_du_jour(col_traites, col_essentiel):
 
     date_str = datetime.now(timezone.utc).strftime("%d %B %Y")
 
-    # ── Prompt sociologique + journalistique ─────────────────────────────────
     system = """Tu es à la fois expert en sociologie burkinabè et journaliste chevronné.
 Tu connais parfaitement les enjeux politiques, sécuritaires, économiques et sociaux du Burkina Faso.
 Ton rôle : rédiger l'essentiel de l'actualité du jour de façon à la fois rigoureuse et captivante,
@@ -677,10 +674,10 @@ Donne UNIQUEMENT le texte de l'essentiel, sans titres ni numéros."""
     essentiel_fr = _llm_generate(prompt, system=system, max_tokens=max_tokens)
 
     if not essentiel_fr:
-        logger.error(" Échec génération essentiel du jour")
+        logger.error("❌ Échec génération essentiel du jour")
         return
 
-    logger.info(" Essentiel du jour généré (%d caractères)", len(essentiel_fr))
+    logger.info("✅ Essentiel du jour généré (%d caractères)", len(essentiel_fr))
 
     # ── Traduction Mooré ──────────────────────────────────────────────────────
     essentiel_moore = ""
@@ -693,42 +690,39 @@ Donne UNIQUEMENT la traduction en Mooré, sans explication."""
     except Exception as e:
         logger.error("❌ Erreur traduction Mooré essentiel : %s", e)
 
-    # ── TTS Mooré essentiel via modèle local ─────────────────────────────────
     audio_moore_url = ""
-    # TODO : Intégrer ton modèle TTS local ici pour l'essentiel du jour
-    #
-    # Exemple :
-    # TTS_MODEL_PATH = os.getenv("TTS_MOORE_MODEL_PATH", "")
-    # if TTS_MODEL_PATH and essentiel_moore:
-    #     try:
-    #         audio_moore_url = ton_modele_tts(essentiel_moore)
-    #         logger.info(" Audio TTS essentiel OK : %s", audio_moore_url)
-    #     except Exception as e:
-    #         logger.error(" Erreur TTS essentiel : %s", e)
+    # TODO : Intégrer ton modèle TTS local ici
 
-    # ── Sauvegarde en base ────────────────────────────────────────────────────
-    doc_essentiel = {
-        "date":              aujourd_hui,
-        "date_str":          date_str,
-        "nb_articles":       len(articles_du_jour),
-        "essentiel_fr":      essentiel_fr,
-        "essentiel_moore":   essentiel_moore,
-        "audio_moore_url":   audio_moore_url,
-        "statut_tts":        "genere" if audio_moore_url else "en_attente",
-        "categories_du_jour": list(set(a.get("categorie", "Autre") for a in articles_du_jour)),
-        "date_generation":   datetime.now(timezone.utc),
-    }
-
+    # ── Sauvegarde : $set sur le doc du jour, $inc sur le compteur ───────────
     try:
         col_essentiel.update_one(
             {"date": aujourd_hui},
-            {"$set": doc_essentiel},
+            {
+                "$set": {
+                    "date":               aujourd_hui,
+                    "date_str":           date_str,
+                    "nb_articles":        len(articles_du_jour),
+                    "essentiel_fr":       essentiel_fr,
+                    "essentiel_moore":    essentiel_moore,
+                    "audio_moore_url":    audio_moore_url,
+                    "statut_tts":         "genere" if audio_moore_url else "en_attente",
+                    "categories_du_jour": list(set(
+                        a.get("categorie", "Autre") for a in articles_du_jour
+                    )),
+                    "date_generation":    datetime.now(timezone.utc),
+                },
+                "$inc": {"nb_regenerations": 1},
+            },
             upsert=True,
         )
-        logger.info(" Essentiel du jour sauvegardé en base (collection: %s)", COL_ESSENTIEL)
+        doc = col_essentiel.find_one({"date": aujourd_hui}, {"nb_regenerations": 1})
+        passe = doc.get("nb_regenerations", 1) if doc else 1
+        logger.info(
+            "💾 Essentiel du %s sauvegardé — passe #%d, %d articles",
+            date_str, passe, len(articles_du_jour),
+        )
     except Exception as e:
-        logger.error(" Erreur sauvegarde essentiel : %s", e)
-
+        logger.error("❌ Erreur sauvegarde essentiel : %s", e)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PIPELINE PRINCIPAL

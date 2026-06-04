@@ -125,3 +125,81 @@ async def get_article(article_id: str):
 
     return format_article(article)
 
+@router.get("/essentiel/dates")
+async def get_essentiel_dates(
+    mois: int = Query(..., ge=1, le=12, description="Mois ex: 6 pour juin"),
+    annee: int = Query(..., ge=2024, description="Année ex: 2026")
+):
+    """
+    Retourne la liste des jours du mois qui ont un essentiel.
+    Utilisé par le calendrier pour afficher les points rouges.
+    """
+    db = get_db()
+
+    debut_mois = datetime(annee, mois, 1, tzinfo=timezone.utc)
+    if mois == 12:
+        fin_mois = datetime(annee + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        fin_mois = datetime(annee, mois + 1, 1, tzinfo=timezone.utc)
+
+    cursor = db.essentiel_du_jour.find(
+        {"date": {"$gte": debut_mois, "$lt": fin_mois}},
+        {"date": 1, "nb_articles": 1, "categories_du_jour": 1, "nb_regenerations": 1}
+    ).sort("date", 1)
+
+    docs = await cursor.to_list(length=31)
+
+    return [
+        {
+            "jour":          doc["date"].day,
+            "mois":          doc["date"].month,
+            "annee":         doc["date"].year,
+            "nb_articles":   doc.get("nb_articles", 0),
+            "categories":    doc.get("categories_du_jour", []),
+            "nb_regenerations": doc.get("nb_regenerations", 1),
+        }
+        for doc in docs
+    ]
+
+
+@router.get("/essentiel/{annee}-{mois:02d}-{jour:02d}")
+async def get_essentiel_par_date(annee: int, mois: int, jour: int):
+    """
+    Retourne l'essentiel complet d'un jour précis.
+    Appelé quand l'utilisateur clique sur un jour du calendrier.
+    """
+    db = get_db()
+
+    try:
+        date_debut = datetime(annee, mois, jour, 0, 0, 0, tzinfo=timezone.utc)
+        date_fin   = datetime(annee, mois, jour, 23, 59, 59, tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Date invalide")
+
+    doc = await db.essentiel_du_jour.find_one(
+        {"date": {"$gte": date_debut, "$lte": date_fin}}
+    )
+
+    if not doc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Aucun essentiel pour le {jour:02d}/{mois:02d}/{annee}"
+        )
+
+    texte = doc.get("essentiel_fr", "")
+    points = [p.strip() for p in texte.split("\n\n") if p.strip()]
+
+    return {
+        "date_str":        doc.get("date_str", ""),
+        "jour":            jour,
+        "mois":            mois,
+        "annee":           annee,
+        "points":          points,
+        "essentiel_fr":    texte,
+        "essentiel_moore": doc.get("essentiel_moore", ""),
+        "audio_moore_url": doc.get("audio_moore_url", ""),
+        "nb_articles":     doc.get("nb_articles", 0),
+        "categories":      doc.get("categories_du_jour", []),
+        "nb_regenerations": doc.get("nb_regenerations", 1),
+        "date_generation": doc.get("date_generation"),
+    }
