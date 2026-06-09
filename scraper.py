@@ -9,7 +9,6 @@ Scraper intelligent de l'actualité burkinabè — VERSION SCRAPY v8
 - Nettoyage HTML avec BeautifulSoup
 """
 
-from asyncio import subprocess
 import os
 import re
 import sys
@@ -17,7 +16,6 @@ import time
 import hashlib
 import tempfile
 import logging
-import multiprocessing
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
@@ -231,6 +229,8 @@ class BurkinaNewsSpider(scrapy.Spider):
         "USER_AGENT": HEADERS["User-Agent"],
         "ROBOTSTXT_OBEY": False,
         "ITEM_PIPELINES": {"__main__.MongoDBPipeline": 300},
+        "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",  # ← ajouter
+        "ASYNCIO_EVENT_LOOP": "asyncio.SelectorEventLoop",  # ← ajouter
         "DEFAULT_REQUEST_HEADERS": {
             "Accept-Language": "fr-FR,fr;q=0.9",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
