@@ -1071,19 +1071,12 @@ def run_single_cycle():
     subprocess.Popen(["python", "PipelineIA.py"])
 
 
-def main_scheduler():
-    multiprocessing.set_start_method("spawn", force=True)
-    logger.info("  Premier cycle immédiat…")
-    p = multiprocessing.Process(target=run_single_cycle)
-    p.start()
-    p.join()
-    while True:
-        logger.info(" Attente 1 heure…")
-        time.sleep(3600)
-        p = multiprocessing.Process(target=run_single_cycle)
-        p.start()
-        p.join()
 
 
 if __name__ == "__main__":
-    main_scheduler()
+    multiprocessing.set_start_method("spawn", force=True)
+    logger.info(" Lancement cycle unique...")
+    p = multiprocessing.Process(target=run_single_cycle)
+    p.start()
+    p.join()
+    logger.info(" Terminé !")
