@@ -1,29 +1,24 @@
 name: Burkina News Scraper
-
 on:
   schedule:
     - cron: '0 6,12,18 * * *'
   workflow_dispatch:
-
 jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Installer dépendances
-        run: pip install -r requirements.txt
-
+        run: |
+          pip install --upgrade pip
+          pip install scrapy
+          pip install -r requirements.txt
       - name: Scraper
         env:
           MONGO_URI: ${{ secrets.MONGO_URI }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           MONGO_DB: ${{ secrets.MONGO_DB }}
         run: python scraper.py
-
-      
