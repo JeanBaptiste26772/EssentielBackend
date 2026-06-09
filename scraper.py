@@ -1057,33 +1057,20 @@ class BurkinaNewsSpider(scrapy.Spider):
 
 def run_single_cycle():
     debut = datetime.now()
-    logger.info(" Début cycle — %s", debut.strftime("%Y-%m-%d %H:%M:%S"))
+    logger.info("Début cycle — %s", debut.strftime("%Y-%m-%d %H:%M:%S"))
     process = CrawlerProcess()
     process.crawl(BurkinaNewsSpider)
     process.start()
     duree = (datetime.now() - debut).total_seconds()
-    logger.info(" Cycle terminé en %.1f secondes", duree)
-
-    # Déclenche le pipeline IA après chaque cycle de scraping
-    logger.info(" Lancement pipeline IA...")
-
+    logger.info("Cycle terminé en %.1f secondes", duree)
+    logger.info("Lancement pipeline IA...")
     import subprocess
-    subprocess.Popen(["python", "PipelineIA.py"])
-
-
-def main_scheduler():
-    multiprocessing.set_start_method("spawn", force=True)
-    logger.info("  Premier cycle immédiat…")
-    p = multiprocessing.Process(target=run_single_cycle)
-    p.start()
-    p.join()
-    while True:
-        logger.info(" Attente 1 heure…")
-        time.sleep(3600)
-        p = multiprocessing.Process(target=run_single_cycle)
-        p.start()
-        p.join()
+    import time
+    time.sleep(10)
+    subprocess.run(["python", "PipelineIA.py"])
 
 
 if __name__ == "__main__":
-    main_scheduler()
+    logger.info("🚀 Lancement cycle unique...")
+    run_single_cycle()
+    logger.info("✅ Terminé !")
