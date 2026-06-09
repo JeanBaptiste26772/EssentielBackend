@@ -17,6 +17,13 @@ jobs:
           pip install scrapy
           pip list | grep -i scrapy
           pip install -r requirements.txt
+
+      - name: Créer .env
+        run: |
+          echo "MONGO_URI=${{ secrets.MONGO_URI }}" >> .env
+          echo "MONGO_DB=${{ secrets.MONGO_DB }}" >> .env
+          echo "COHERE_API_KEY=${{ secrets.COHERE_API_KEY }}" >> .env
+          echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> .env
       - name: Scraper
         env:
           MONGO_URI: ${{ secrets.MONGO_URI }}
