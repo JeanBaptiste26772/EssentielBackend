@@ -9,6 +9,7 @@ Scraper intelligent de l'actualité burkinabè — VERSION SCRAPY v8
 - Nettoyage HTML avec BeautifulSoup
 """
 
+from asyncio import subprocess
 import os
 import re
 import sys
@@ -16,6 +17,7 @@ import time
 import hashlib
 import tempfile
 import logging
+import multiprocessing
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
@@ -1066,12 +1068,22 @@ def run_single_cycle():
     logger.info(" Lancement pipeline IA...")
 
     import subprocess
-    import time
-    time.sleep(10)
-    subprocess.run(["python", "PipelineIA.py"])
+    subprocess.Popen(["python", "PipelineIA.py"])
 
 
+def main_scheduler():
+    multiprocessing.set_start_method("spawn", force=True)
+    logger.info("  Premier cycle immédiat…")
+    p = multiprocessing.Process(target=run_single_cycle)
+    p.start()
+    p.join()
+    while True:
+        logger.info(" Attente 1 heure…")
+        time.sleep(3600)
+        p = multiprocessing.Process(target=run_single_cycle)
+        p.start()
+        p.join()
 
 
 if __name__ == "__main__":
-    run_single_cycle()
+    main_scheduler()
